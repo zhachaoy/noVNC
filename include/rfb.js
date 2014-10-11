@@ -85,8 +85,7 @@ var RFB;
             zlib: []                // TIGHT zlib streams
         };
 
-        this._fb_Bpp = 4;
-        this._fb_depth = 3;
+        this._pixelFormat = {};
         this._fb_width = 0;
         this._fb_height = 0;
         this._fb_name = "";
@@ -117,7 +116,7 @@ var RFB;
             'target': 'null',                       // VNC display rendering Canvas object
             'focusContainer': document,             // DOM element that captures keyboard input
             'encrypt': false,                       // Use TLS/SSL/wss encryption
-            'true_color': true,                     // Request true color pixel data
+            'convertColor': false,                  // Client will not honor request for native color
             'local_cursor': false,                  // Request locally rendered cursor
             'shared': true,                         // Request shared mode
             'view_only': false,                     // Disable client mouse/keyboard
@@ -854,21 +853,21 @@ var RFB;
             if (this._sock.rQwait("server initialization", 24)) { return false; }
 
             /* Screen size */
-            this._fb_width  = this._sock.rQshift16();
-            this._fb_height = this._sock.rQshift16();
+            this._fb_width                = this._sock.rQshift16();
+            this._fb_height               = this._sock.rQshift16();
 
             /* PIXEL_FORMAT */
-            var bpp         = this._sock.rQshift8();
-            var depth       = this._sock.rQshift8();
-            var big_endian  = this._sock.rQshift8();
-            var true_color  = this._sock.rQshift8();
+            this._pixelFormat.bpp         = this._sock.rQshift8();
+            this._pixelFormat.depth       = this._sock.rQshift8();
+            this._pixelFormat.big_endian  = (this._sock.rQshift8() === 1) ? true : false;
+            this._pixelFormat.true_color  = (this._sock.rQshift8() === 1) ? true : false;
 
-            var red_max     = this._sock.rQshift16();
-            var green_max   = this._sock.rQshift16();
-            var blue_max    = this._sock.rQshift16();
-            var red_shift   = this._sock.rQshift8();
-            var green_shift = this._sock.rQshift8();
-            var blue_shift  = this._sock.rQshift8();
+            this._pixelFormat.red_max     = this._sock.rQshift16();
+            this._pixelFormat.green_max   = this._sock.rQshift16();
+            this._pixelFormat.blue_max    = this._sock.rQshift16();
+            this._pixelFormat.red_shift   = this._sock.rQshift8();
+            this._pixelFormat.green_shift = this._sock.rQshift8();
+            this._pixelFormat.blue_shift  = this._sock.rQshift8();
             this._sock.rQskipBytes(3);  // padding
 
             // NB(directxman12): we don't want to call any callbacks or print messages until
@@ -907,56 +906,90 @@ var RFB;
             // NB(directxman12): these are down here so that we don't run them multiple times
             //                   if we backtrack
             Util.Info("Screen: " + this._fb_width + "x" + this._fb_height +
-                      ", bpp: " + bpp + ", depth: " + depth +
-                      ", big_endian: " + big_endian +
-                      ", true_color: " + true_color +
-                      ", red_max: " + red_max +
-                      ", green_max: " + green_max +
-                      ", blue_max: " + blue_max +
-                      ", red_shift: " + red_shift +
-                      ", green_shift: " + green_shift +
-                      ", blue_shift: " + blue_shift);
-
-            if (big_endian !== 0) {
-                Util.Warn("Server native endian is not little endian");
-            }
-
-            if (red_shift !== 16) {
-                Util.Warn("Server native red-shift is not 16");
-            }
-
-            if (blue_shift !== 0) {
-                Util.Warn("Server native blue-shift is not 0");
-            }
+                      ", bpp: " + this._pixelFormat.bpp + ", depth: " + this._pixelFormat.depth +
+                      ", big_endian: " + this._pixelFormat.big_endian +
+                      ", true_color: " + this._pixelFormat.true_color +
+                      ", red_max: " + this._pixelFormat.red_max +
+                      ", green_max: " + this._pixelFormat.green_max +
+                      ", blue_max: " + this._pixelFormat.blue_max +
+                      ", red_shift: " + this._pixelFormat.red_shift +
+                      ", green_shift: " + this._pixelFormat.green_shift +
+                      ", blue_shift: " + this._pixelFormat.blue_shift);
 
             // we're past the point where we could backtrack, so it's safe to call this
             this._onDesktopName(this, this._fb_name);
 
-            if (this._true_color && this._fb_name === "Intel(r) AMT KVM") {
-                Util.Warn("Intel AMT KVM only supports 8/16 bit depths.  Disabling true color");
-                this._true_color = false;
+            if (this._fb_name === "Intel(r) AMT KVM") {
+                Util.Warn("Intel AMT KVM only supports 8/16 bit depths, using server pixel format");
+                this._convertColor = true;
             }
 
-            this._display.set_true_color(this._true_color);
+            if (this._convertColor)
+                this._display.set_true_color(this._pixelFormat.true_color);
             this._onFBResize(this, this._fb_width, this._fb_height);
             this._display.resize(this._fb_width, this._fb_height);
             this._keyboard.grab();
             this._mouse.grab();
 
-            if (this._true_color) {
-                this._fb_Bpp = 4;
-                this._fb_depth = 3;
-            } else {
-                this._fb_Bpp = 1;
-                this._fb_depth = 1;
+            var response = [];
+
+            // only send if not native, and we think the server will honor the conversion
+            if (!this._convertColor) {
+                if (this._pixelFormat.big_endian !== false ||
+                        this._pixelFormat.red_max !== 255 ||
+                        this._pixelFormat.green_max !== 255 ||
+                        this._pixelFormat.blue_max !== 255 ||
+                        this._pixelFormat.red_shift !== 16 ||
+                        this._pixelFormat.green_shift !== 8 ||
+                        this._pixelFormat.blue_shift !== 0 ||
+                        !(this._pixelFormat.bpp === 32 &&
+                            this._pixelFormat.depth === 24 &&
+                            this._pixelFormat.true_color === true) ||
+                        !(this._pixelFormat.bpp === 8 &&
+                            this._pixelFormat.depth === 8 &&
+                            this._pixelFormat.true_color === false)) {
+                    this._pixelFormat.big_endian = false;
+                    this._pixelFormat.red_max = 255;
+                    this._pixelFormat.green_max = 255;
+                    this._pixelFormat.blue_max = 255;
+                    this._pixelFormat.red_shift = 16;
+                    this._pixelFormat.green_shift = 8;
+                    this._pixelFormat.blue_shift = 0;
+                    if (this._pixelFormat.true_color) {
+                        this._pixelFormat.bpp = 32;
+                        this._pixelFormat.depth = 24;
+                    } else {
+                        this._pixelFormat.bpp = 8;
+                        this._pixelFormat.depth = 8;
+                    }
+                    response = response.concat(RFB.messages.pixelFormat(this._pixelFormat));
+                } else {
+                    Util.Warn("Server pixel format matches our preferred native, disabling color conversion");
+                    this._convertColor = false;
+                }
             }
 
-            var response = RFB.messages.pixelFormat(this._fb_Bpp, this._fb_depth, this._true_color);
-            response = response.concat(
-                            RFB.messages.clientEncodings(this._encodings, this._local_cursor, this._true_color));
-            response = response.concat(
-                            RFB.messages.fbUpdateRequests(this._display.getCleanDirtyReset(),
-                                                          this._fb_width, this._fb_height));
+            this._pixelFormat.Bpp = this._pixelFormat.bpp / 8;
+            this._pixelFormat.Bdepth = Math.ceil(this._pixelFormat.depth / 8);
+
+            if (this._pixelFormat.bpp < this._pixelFormat.depth) {
+                return this._fail('server claims greater depth than bpp');
+            }
+
+            var max_depth = Math.ceil(Math.log(this._pixelFormat.red_max)/Math.LN2) +
+                            Math.ceil(Math.log(this._pixelFormat.green_max)/Math.LN2) +
+                            Math.ceil(Math.log(this._pixelFormat.blue_max)/Math.LN2);
+
+            if (this._pixelFormat.true_color && this._pixelFormat.depth > max_depth) {
+                return this._fail('server claims greater depth than sum of RGB maximums');
+            }
+
+            response = response.concat(RFB.messages.clientEncodings(
+                            this._encodings, this._local_cursor,
+                            this._pixelFormat.true_color));
+            response = response.concat(RFB.messages.fbUpdateRequests(
+                            this._display.getCleanDirtyReset(),
+                            this._fb_width, this._fb_height));
 
             this._timing.fbu_rt_start = (new Date()).getTime();
             this._timing.pixels = 0;
@@ -1184,13 +1217,95 @@ var RFB;
 
             return true;  // We finished this FBU
         },
+
+        // like _convert_color, but always outputs bgr, and for only one pixel
+        _convert_one_color: function (arr, Bpp) {
+            if (Bpp === undefined) {
+                Bpp = this._pixelFormat.Bpp;
+            }
+
+            if (!this._convertColor ||
+                    // HACK? Xtightvnc needs this and I have no idea why
+                    (this._FBU.encoding === 0x07 && this._pixelFormat.depth === 24)) {
+                if (Bpp === 4) {
+                    return arr;
+                } else if (Bpp === 3) {
+                    return arr.reverse();
+                } else {
+                    Util.Error('convert color disabled, but Bpp is not 3 or 4!');
+                }
+            }
+
+            var bgr = new Array(3);
+
+            var redMult = 256/(this._pixelFormat.red_max + 1);
+            var greenMult = 256/(this._pixelFormat.red_max + 1);
+            var blueMult = 256/(this._pixelFormat.blue_max + 1);
+
+            var pix = 0;
+            for (var k = 0; k < Bpp; k++) {
+                if (this._pixelFormat.big_endian) {
+                    pix = (pix << 8) | arr[k];
+                } else {
+                    pix = (arr[k] << (k*8)) | pix;
+                }
+            }
+
+            bgr[2] = ((pix >>> this._pixelFormat.red_shift) & this._pixelFormat.red_max) * redMult;
+            bgr[1] = ((pix >>> this._pixelFormat.green_shift) & this._pixelFormat.green_max) * greenMult;
+            bgr[0] = ((pix >>> this._pixelFormat.blue_shift) & this._pixelFormat.blue_max) * blueMult;
+
+            return bgr;
+        },
+
+        // input:  byte stream in pixel format
+        // output: RGB
+        _convert_color: function (arr, Bpp) {
+            if (Bpp === undefined) {
+                Bpp = this._pixelFormat.Bpp;
+            }
+
+            if (!this._convertColor ||
+                    // HACK? Xtightvnc needs this and I have no idea why
+                    (this._FBU.encoding === 0x07 && this._pixelFormat.depth === 24)) {
+                if (Bpp !== 4 && Bpp !== 3) {
+                    Util.Error('convert color disabled, but Bpp is not 3 or 4!');
+                } else {
+                    return arr;
+                }
+            }
+
+            var data = new Array(arr.length / Bpp * 3);
+
+            var redMult = 256/(this._pixelFormat.red_max + 1);
+            var greenMult = 256/(this._pixelFormat.red_max + 1);
+            var blueMult = 256/(this._pixelFormat.blue_max + 1);
+
+            for (var i = 0, j = 0; i < arr.length; i += Bpp, j += 3) {
+                var pix = 0;
+
+                for (var k = 0; k < Bpp; k++) {
+                    if (this._pixelFormat.big_endian) {
+                        pix = (pix << 8) | arr[i + k];
+                    } else {
+                        pix = (arr[i + k] << (k*8)) | pix;
+                    }
+                }
+
+                data[j] = ((pix >>> this._pixelFormat.red_shift) & this._pixelFormat.red_max) * redMult;
+                data[j + 1] = ((pix >>> this._pixelFormat.green_shift) & this._pixelFormat.green_max) * greenMult;
+                data[j + 2] = ((pix >>> this._pixelFormat.blue_shift) & this._pixelFormat.blue_max) * blueMult;
+            }
+
+            return data;
+        },
     };
 
     Util.make_properties(RFB, [
         ['target', 'wo', 'dom'],                // VNC display rendering Canvas object
         ['focusContainer', 'wo', 'dom'],        // DOM element that captures keyboard input
         ['encrypt', 'rw', 'bool'],              // Use TLS/SSL/wss encryption
-        ['true_color', 'rw', 'bool'],           // Request true color pixel data
+        ['convertColor', 'rw', 'bool'],         // Client will not honor request for native color
         ['local_cursor', 'rw', 'bool'],         // Request locally rendered cursor
         ['shared', 'rw', 'bool'],               // Request shared mode
         ['view_only', 'rw', 'bool'],            // Disable client mouse/keyboard
@@ -1261,23 +1376,23 @@ var RFB;
             return arr;
         },
 
-        pixelFormat: function (bpp, depth, true_color) {
+        pixelFormat: function (pf) {
             var arr = [0]; // msg-type
             arr.push8(0);  // padding
             arr.push8(0);  // padding
             arr.push8(0);  // padding
 
-            arr.push8(bpp * 8); // bits-per-pixel
-            arr.push8(depth * 8); // depth
-            arr.push8(0);  // little-endian
-            arr.push8(true_color ? 1 : 0);  // true-color
+            arr.push8(pf.bpp);
+            arr.push8(pf.depth);
+            arr.push8(pf.big_endian ? 1 : 0);
+            arr.push8(pf.true_color ? 1 : 0);
 
-            arr.push16(255);  // red-max
-            arr.push16(255);  // green-max
-            arr.push16(255);  // blue-max
-            arr.push8(16);    // red-shift
-            arr.push8(8);     // green-shift
-            arr.push8(0);     // blue-shift
+            arr.push16(pf.red_max);
+            arr.push16(pf.green_max);
+            arr.push16(pf.blue_max);
+            arr.push8(pf.red_shift);
+            arr.push8(pf.green_shift);
+            arr.push8(pf.blue_shift);
 
             arr.push8(0);     // padding
             arr.push8(0);     // padding
@@ -1366,19 +1481,26 @@ var RFB;
                 this._FBU.lines = this._FBU.height;
             }
 
-            this._FBU.bytes = this._FBU.width * this._fb_Bpp;  // at least a line
+            this._FBU.bytes = this._FBU.width * this._pixelFormat.Bpp;  // at least a line
             if (this._sock.rQwait("RAW", this._FBU.bytes)) { return false; }
             var cur_y = this._FBU.y + (this._FBU.height - this._FBU.lines);
             var curr_height = Math.min(this._FBU.lines,
-                                       Math.floor(this._sock.rQlen() / (this._FBU.width * this._fb_Bpp)));
-            this._display.blitImage(this._FBU.x, cur_y, this._FBU.width,
-                                    curr_height, this._sock.get_rQ(),
-                                    this._sock.get_rQi());
-            this._sock.rQskipBytes(this._FBU.width * curr_height * this._fb_Bpp);
+                                       Math.floor(this._sock.rQlen() / (this._FBU.width * this._pixelFormat.Bpp)));
+
+            this._display.renderQ_push({
+                'type': 'blit',
+                'data': this._convert_color(this._sock.rQshiftBytes(curr_height * this._FBU.width * this._pixelFormat.Bpp)),
+                'rgb': this._convertColor || this._pixelFormat.Bpp === 3,
+                'x': this._FBU.x,
+                'y': cur_y,
+                'width': this._FBU.width,
+                'height': curr_height
+            });
+
             this._FBU.lines -= curr_height;
 
             if (this._FBU.lines > 0) {
-                this._FBU.bytes = this._FBU.width * this._fb_Bpp;  // At least another line
+                this._FBU.bytes = this._FBU.width * this._pixelFormat.Bpp;  // At least another line
             } else {
                 this._FBU.rects--;
                 this._FBU.bytes = 0;
@@ -1407,15 +1529,15 @@ var RFB;
         RRE: function () {
             var color;
             if (this._FBU.subrects === 0) {
-                this._FBU.bytes = 4 + this._fb_Bpp;
-                if (this._sock.rQwait("RRE", 4 + this._fb_Bpp)) { return false; }
+                this._FBU.bytes = 4 + this._pixelFormat.Bpp;
+                if (this._sock.rQwait("RRE", 4 + this._pixelFormat.Bpp)) { return false; }
                 this._FBU.subrects = this._sock.rQshift32();
-                color = this._sock.rQshiftBytes(this._fb_Bpp);  // Background
+                color = this._convert_one_color(this._sock.rQshiftBytes(this._pixelFormat.Bpp));  // Background
                 this._display.fillRect(this._FBU.x, this._FBU.y, this._FBU.width, this._FBU.height, color);
             }
 
-            while (this._FBU.subrects > 0 && this._sock.rQlen() >= (this._fb_Bpp + 8)) {
-                color = this._sock.rQshiftBytes(this._fb_Bpp);
+            while (this._FBU.subrects > 0 && this._sock.rQlen() >= (this._pixelFormat.Bpp + 8)) {
+                color = this._convert_one_color(this._sock.rQshiftBytes(this._pixelFormat.Bpp));
                 var x = this._sock.rQshift16();
                 var y = this._sock.rQshift16();
                 var width = this._sock.rQshift16();
@@ -1426,7 +1548,7 @@ var RFB;
 
             if (this._FBU.subrects > 0) {
                 var chunk = Math.min(this._rre_chunk_sz, this._FBU.subrects);
-                this._FBU.bytes = (this._fb_Bpp + 8) * chunk;
+                this._FBU.bytes = (this._pixelFormat.Bpp + 8) * chunk;
             } else {
                 this._FBU.rects--;
                 this._FBU.bytes = 0;
@@ -1466,20 +1588,20 @@ var RFB;
 
                 // Figure out how much we are expecting
                 if (subencoding & 0x01) {  // Raw
-                    this._FBU.bytes += w * h * this._fb_Bpp;
+                    this._FBU.bytes += w * h * this._pixelFormat.Bpp;
                 } else {
                     if (subencoding & 0x02) {  // Background
-                        this._FBU.bytes += this._fb_Bpp;
+                        this._FBU.bytes += this._pixelFormat.Bpp;
                     }
                     if (subencoding & 0x04) {  // Foreground
-                        this._FBU.bytes += this._fb_Bpp;
+                        this._FBU.bytes += this._pixelFormat.Bpp;
                     }
                     if (subencoding & 0x08) {  // AnySubrects
                         this._FBU.bytes++;  // Since we aren't shifting it off
                         if (this._sock.rQwait("hextile subrects header", this._FBU.bytes)) { return false; }
                         subrects = rQ[rQi + this._FBU.bytes - 1];  // Peek
                         if (subencoding & 0x10) {  // SubrectsColoured
-                            this._FBU.bytes += subrects * (this._fb_Bpp + 2);
+                            this._FBU.bytes += subrects * (this._pixelFormat.Bpp + 2);
                         } else {
                             this._FBU.bytes += subrects * 2;
                         }
@@ -1499,16 +1621,24 @@ var RFB;
                         this._display.fillRect(x, y, w, h, this._FBU.background);
                     }
                 } else if (this._FBU.subencoding & 0x01) {  // Raw
-                    this._display.blitImage(x, y, w, h, rQ, rQi);
+                    this._display.renderQ_push({
+                        'type': 'blit',
+                        'rgb': this._convertColor || this._pixelFormat.Bpp === 3,
+                        'data': this._convert_color(rQ.slice(rQi, rQi + this._FBU.bytes - 1)),
+                        'x': x,
+                        'y': y,
+                        'width': w,
+                        'height': h
+                    });
                     rQi += this._FBU.bytes - 1;
                 } else {
                     if (this._FBU.subencoding & 0x02) {  // Background
-                        this._FBU.background = rQ.slice(rQi, rQi + this._fb_Bpp);
-                        rQi += this._fb_Bpp;
+                        this._FBU.background = this._convert_one_color(rQ.slice(rQi, rQi + this._pixelFormat.Bpp));
+                        rQi += this._pixelFormat.Bpp;
                     }
                     if (this._FBU.subencoding & 0x04) {  // Foreground
-                        this._FBU.foreground = rQ.slice(rQi, rQi + this._fb_Bpp);
-                        rQi += this._fb_Bpp;
+                        this._FBU.foreground = this._convert_one_color(rQ.slice(rQi, rQi + this._pixelFormat.Bpp));
+                        rQi += this._pixelFormat.Bpp;
                     }
 
                     this._display.startTile(x, y, w, h, this._FBU.background);
@@ -1519,8 +1649,8 @@ var RFB;
                         for (var s = 0; s < subrects; s++) {
                             var color;
                             if (this._FBU.subencoding & 0x10) {  // SubrectsColoured
-                                color = rQ.slice(rQi, rQi + this._fb_Bpp);
-                                rQi += this._fb_Bpp;
+                                color = this._convert_one_color(rQ.slice(rQi, rQi + this._pixelFormat.Bpp));
+                                rQi += this._pixelFormat.Bpp;
                             } else {
                                 color = this._FBU.foreground;
                             }
@@ -1567,7 +1697,7 @@ var RFB;
         },
 
         display_tight: function (isTightPNG) {
-            if (this._fb_depth === 1) {
+            if (this._pixelFormat.Bdepth === 1) {
                 this._fail("Tight protocol handler only implements true color mode");
             }
 
@@ -1651,7 +1781,7 @@ var RFB;
 
             var handlePalette = function () {
                 var numColors = rQ[rQi + 2] + 1;
-                var paletteSize = numColors * this._fb_depth;
+                var paletteSize = numColors * this._pixelFormat.Bdepth;
                 this._FBU.bytes += paletteSize;
                 if (this._sock.rQwait("TIGHT palette " + cmode, this._FBU.bytes)) { return false; }
 
@@ -1671,7 +1801,7 @@ var RFB;
 
                 // Shift ctl, filter id, num colors, palette entries, and clength off
                 this._sock.rQskipBytes(3);
-                var palette = this._sock.rQshiftBytes(paletteSize);
+                var palette = this._convert_color(this._sock.rQshiftBytes(paletteSize), this._pixelFormat.Bdepth);
                 this._sock.rQskipBytes(clength[0]);
 
                 if (raw) {
@@ -1684,7 +1814,8 @@ var RFB;
                 var rgb = indexedToRGB(data, numColors, palette, this._FBU.width, this._FBU.height);
 
                 this._display.renderQ_push({
-                    'type': 'blitRgb',
+                    'type': 'blit',
+                    'rgb': true,
                     'data': rgb,
                     'x': this._FBU.x,
                     'y': this._FBU.y,
@@ -1697,7 +1828,7 @@ var RFB;
 
             var handleCopy = function () {
                 var raw = false;
-                var uncompressedSize = this._FBU.width * this._FBU.height * this._fb_depth;
+                var uncompressedSize = this._FBU.width * this._FBU.height * this._pixelFormat.Bdepth;
                 if (uncompressedSize < 12) {
                     raw = true;
                     clength = [0, uncompressedSize];
@@ -1717,8 +1848,9 @@ var RFB;
                 }
 
                 this._display.renderQ_push({
-                    'type': 'blitRgb',
-                    'data': data,
+                    'type': 'blit',
+                    'data': this._convert_color(data, this._pixelFormat.Bdepth),
+                    'rgb': this._convertColor || this._pixelFormat.Bpp === 3,
                     'x': this._FBU.x,
                     'y': this._FBU.y,
                     'width': this._FBU.width,
@@ -1751,7 +1883,7 @@ var RFB;
             switch (cmode) {
                 // fill use fb_depth because TPIXELs drop the padding byte
                 case "fill":  // TPIXEL
-                    this._FBU.bytes += this._fb_depth;
+                    this._FBU.bytes += this._pixelFormat.Bdepth;
                     break;
                 case "jpeg":  // max clength
                     this._FBU.bytes += 3;
@@ -1772,14 +1904,13 @@ var RFB;
             switch (cmode) {
                 case "fill":
                     this._sock.rQskip8();  // shift off ctl
-                    var color = this._sock.rQshiftBytes(this._fb_depth);
                     this._display.renderQ_push({
                         'type': 'fill',
                         'x': this._FBU.x,
                         'y': this._FBU.y,
                         'width': this._FBU.width,
                         'height': this._FBU.height,
-                        'color': [color[2], color[1], color[0]]
+                        'color': this._convert_one_color(this._sock.rQshiftBytes(this._pixelFormat.Bdepth), this._pixelFormat.Bdepth)
                     });
                     break;
                 case "png":
@@ -1854,7 +1985,7 @@ var RFB;
             var w = this._FBU.width;
             var h = this._FBU.height;
 
-            var pixelslength = w * h * this._fb_Bpp;
+            var pixelslength = w * h * this._pixelFormat.Bpp;
             var masklength = Math.floor((w + 7) / 8) * h;
 
             this._FBU.bytes = pixelslength + masklength;

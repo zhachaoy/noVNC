@@ -412,19 +412,14 @@ var Display;
             // else: No-op -- already done by setSubTile
         },
 
-        blitImage: function (x, y, width, height, arr, offset) {
+        blitImage: function (x, y, width, height, arr, offset, isRgb) {
             if (this._true_color) {
-                this._bgrxImageData(x, y, this._viewportLoc.x, this._viewportLoc.y, width, height, arr, offset);
+                if (isRgb) {
+                    this._rgbImageData(x, y, this._viewportLoc.x, this._viewportLoc.y, width, height, arr, offset);
+                } else {
+                    this._bgrxImageData(x, y, this._viewportLoc.x, this._viewportLoc.y, width, height, arr, offset);
+                }
             } else {
-                this._cmapImageData(x, y, this._viewportLoc.x, this._viewportLoc.y, width, height, arr, offset);
-            }
-        },
-
-        blitRgbImage: function (x, y , width, height, arr, offset) {
-            if (this._true_color) {
-                this._rgbImageData(x, y, this._viewportLoc.x, this._viewportLoc.y, width, height, arr, offset);
-            } else {
-                // probably wrong?
                 this._cmapImageData(x, y, this._viewportLoc.x, this._viewportLoc.y, width, height, arr, offset);
             }
         },
@@ -592,10 +587,7 @@ var Display;
                         this.fillRect(a.x, a.y, a.width, a.height, a.color);
                         break;
                     case 'blit':
-                        this.blitImage(a.x, a.y, a.width, a.height, a.data, 0);
-                        break;
-                    case 'blitRgb':
-                        this.blitRgbImage(a.x, a.y, a.width, a.height, a.data, 0);
+                        this.blitImage(a.x, a.y, a.width, a.height, a.data, 0, a.rgb);
                         break;
                     case 'img':
                         if (a.img.complete) {
