@@ -640,55 +640,9 @@ var RFB;
         // Message Handlers
 
         _negotiate_protocol_version: function () {
-            if (this._sock.rQlen() < 12) {
-                return this._fail("Incomplete protocol version");
-            }
-
-            var sversion = this._sock.rQshiftStr(12).substr(4, 7);
-            Util.Info("Server ProtocolVersion: " + sversion);
-            var is_repeater = 0;
-            switch (sversion) {
-                case "000.000":  // UltraVNC repeater
-                    is_repeater = 1;
-                    break;
-                case "003.003":
-                case "003.006":  // UltraVNC
-                case "003.889":  // Apple Remote Desktop
-                    this._rfb_version = 3.3;
-                    break;
-                case "003.007":
-                    this._rfb_version = 3.7;
-                    break;
-                case "003.008":
-                case "004.000":  // Intel AMT KVM
-                case "004.001":  // RealVNC 4.6
-                    this._rfb_version = 3.8;
-                    break;
-                default:
-                    return this._fail("Invalid server version " + sversion);
-            }
-
-            if (is_repeater) {
-                var repeaterID = this._repeaterID;
-                while (repeaterID.length < 250) {
-                    repeaterID += "\0";
-                }
-                this._sock.send_string(repeaterID);
-                return true;
-            }
-
-            if (this._rfb_version > this._rfb_max_version) {
-                this._rfb_version = this._rfb_max_version;
-            }
-
-            // Send updates either at a rate of 1 update per 50ms, or
-            // whatever slower rate the network can handle
-            this._sendTimer = setInterval(this._sock.flush.bind(this._sock), 50);
-
-            var cversion = "00" + parseInt(this._rfb_version, 10) +
-                           ".00" + ((this._rfb_version * 10) % 10);
-            this._sock.send_string("RFB " + cversion + "\n");
-            this._updateState('Security', 'Sent ProtocolVersion: ' + cversion);
+            this._rfb_version = 3.8
+            this._updateState('ServerInitialisation', 'Skipping handshake');
+            this._init_msg(); // jump to authentication
         },
 
         _negotiate_security: function () {
