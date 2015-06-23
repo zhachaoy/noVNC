@@ -1,0 +1,4 @@
+*.html	usr/share/vmware-mks
+favicon.ico	usr/share/vmware-mks
+include/*.js	usr/share/vmware-mks/include
+include/*.css	usr/share/vmware-mks/include

@@ -1,0 +1,15 @@
+Source: vmware-mks
+Section: web
+Priority: optional
+Maintainer: Radoslav Gerganov <rgerganov@vmware.com>
+Build-Depends: debhelper (>= 7.0.50)
+Standards-Version: 3.9.3
+X-Python-Version: >= 2.6
+
+Package: vmware-mks
+Architecture: any
+Depends: ${shlibs:Depends},
+ adduser,
+Description: VMware MKS client
+ MKS client using HTML5 (WebSockets, Canvas) for the VMware consoles.
+

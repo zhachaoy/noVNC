@@ -1,0 +1,5 @@
+vmware-mks (1.0.0-0) precise; urgency=low
+
+  * Initial version of the VMware MKS client
+
+ -- Radoslav Gerganov <rgerganov@vmware.com>  Tue, 23 Jun 2015 10:34:22 +0300
