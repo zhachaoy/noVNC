@@ -5,7 +5,7 @@
 ### Description
 
 noVNC is a HTML5 VNC client that runs well in any modern browser
-including mobile browsers (iPhone/iPad and Android).
+including mobile browsers (iPhone/iPad and Android). 
 
 Many companies/projects have integrated noVNC including [Ganeti Web
 Manager](http://code.osuosl.org/projects/ganeti-webmgr),
